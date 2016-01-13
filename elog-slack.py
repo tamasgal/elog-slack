@@ -33,6 +33,9 @@ slack = SlackClient('YOUR-SLACK-API-TOKEN')
 
 
 class EventHandler(pyinotify.ProcessEvent):
+    def my_init(self):
+        self.logged_files = []
+
     def process_IN_CLOSE_WRITE(self, event):
         if not self._is_valid_filetype(event.pathname):
             return
@@ -46,9 +49,16 @@ class EventHandler(pyinotify.ProcessEvent):
         try:
             destination = DESTINATIONS[elog_entry.logbook]
         except KeyError:
-            print("No destination for logbook '{0}'. Ignoring...".format(elog_entry.logbook))
+            print("No destination for logbook '{0}'. Ignoring..."
+                  .format(elog_entry.logbook))
         else:
-            slack.chat_post_message(destination, elog_entry, username=BOTNAME)
+            if event.name in self.logged_files:
+                pre = 'Updated '
+            else:
+                pre = ''
+                self.logged_files.append(event.name)
+            message = pre + str(elog_entry)
+            slack.chat_post_message(destination, message, username=BOTNAME)
 
     def _is_valid_filetype(self, path):
         return path.endswith('.log')
