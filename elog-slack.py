@@ -5,6 +5,7 @@ Slackbot for ELOG
 
 """
 import os
+import re
 
 import pyinotify
 
@@ -17,19 +18,84 @@ mask = pyinotify.IN_CLOSE_WRITE
 URL = 'http://elog.whatever.com'
 LOGBOOK_PATH = '/usr/local/elog/logbooks'
 BOTNAME = 'ELOG'
+PREVIEW_LENGTH = 150
+FALLBACK_DESTINATION = '#elog'
 DESTINATIONS = {
-    'Operations IT': '@tgal',
-    'Operations FR': '@tgal',
-    'Qualification': '@tgal',
-    'DOM Integration': '@tgal',
-    'DU Integration': '@tgal',
-    'DAQ Readout': '@tgal',
-    'Electronics': '@tgal',
-    'Analysis': '@tgal',
-    'Computing and Software': '@tgal',
+    'Analysis': '#analysis',
+    'Computing and Software': '#software',
+    'Whatever': '@tgal',
     }
 
 slack = SlackClient('YOUR-SLACK-API-TOKEN')
+
+
+class ElogEntry(object):
+    def __init__(self, logbook, msg_id=None):
+        self.logbook = logbook
+        self.id = msg_id
+        self.header = {}
+        self.content = ''
+
+    @property
+    def author(self):
+        return self._lookup('Author')
+
+    @property
+    def type(self):
+        return self._lookup('Type')
+
+    @property
+    def subject(self):
+        return self._lookup('Subject')
+
+    @property
+    def url(self):
+        escaped = re.sub(r"[\s_]+", '+', self.logbook)
+        return URL + '/' + escaped + '/' + str(self.id)
+
+    def _lookup(self, key):
+        try:
+            return self.header[key]
+        except KeyError:
+            return "Unknown"
+
+    def __repr__(self):
+        return ("ELOG entry from *{0.author}* in *{0.logbook}* (_{0.type}_):\n"
+                "*{0.subject}*\n{1}...\n<{0.url}>"
+                .format(self, self.content[:PREVIEW_LENGTH]))
+
+
+class ElogEntryBundle(object):
+    def __init__(self, pathname):
+        self.logbook = dirname(pathname)
+
+        with open(pathname) as input_file:
+            self.entries = self._parse_entries(input_file)
+
+    @property
+    def newest_entry(self):
+        return self.entries[-1]
+
+    def _parse_entries(self, input_file, msg_id=None):
+        if msg_id is None:
+            line = input_file.readline()
+            if not line.startswith('$@MID@$:'):
+                raise ValueError("Not an ELOG-entry file!")
+            msg_id = int(line.split(':')[1])
+
+        entry = ElogEntry(self.logbook, msg_id)
+        for line in input_file:
+            if line.startswith(40*'='):
+                break
+            parameter, value = re.findall(r'([^:.]*): (.*)', line)[0]
+            entry.header[parameter] = value
+        for line in input_file:
+            if line.startswith('$@MID@$:'):
+                msg_id = int(line.split(':')[1])
+                return [entry] + self._parse_entries(input_file, msg_id)
+            else:
+                entry.content += line
+        return [entry]
 
 
 class EventHandler(pyinotify.ProcessEvent):
@@ -41,7 +107,8 @@ class EventHandler(pyinotify.ProcessEvent):
             return
 
         try:
-            elog_entry = ElogEntry(event.pathname)
+            elog_bundle = ElogEntryBundle(event.pathname)
+            elog_entry = elog_bundle.newest_entry
         except ValueError:
             print("Could not parse '{0}'. Ignoring...".format(event.pathname))
             return
@@ -49,46 +116,21 @@ class EventHandler(pyinotify.ProcessEvent):
         try:
             destination = DESTINATIONS[elog_entry.logbook]
         except KeyError:
-            print("No destination for logbook '{0}'. Ignoring..."
+            print("No destination for logbook '{0}'. Using fallback..."
                   .format(elog_entry.logbook))
-        else:
+            destination = FALLBACK_DESTINATION
+        finally:
             if event.name in self.logged_files:
                 pre = 'Updated '
             else:
                 pre = ''
                 self.logged_files.append(event.name)
             message = pre + str(elog_entry)
+            print(message)
             slack.chat_post_message(destination, message, username=BOTNAME)
 
     def _is_valid_filetype(self, path):
         return path.endswith('.log')
-
-
-class ElogEntry(object):
-    def __init__(self, pathname):
-        self.logbook = dirname(pathname)
-        self.author = None
-        self.subject = None
-        self.type = None
-        self.id = None
-        with open(pathname, 'r') as input_file:
-            for line in input_file:
-                if line.startswith('Author:'):
-                    self.author = line.split(':')[1].strip()
-                if line.startswith('Subject:'):
-                    self.subject = line.split(':')[1].strip()
-                if line.startswith('Type:'):
-                    self.type = line.split(':')[1].strip()
-                if line.startswith('$@MID@$:'):
-                    self.id = line.split(':')[1].strip()
-        if not all((self.author, self.subject, self.type, self.id)):
-            raise ValueError
-        self.url = URL + '/' + self.logbook.replace(' ', '+') + '/' + self.id
-
-    def __repr__(self):
-        return ("ElogEntry from *{0.author}* in *{0.logbook}* (_{0.type}_):\n"
-                "*{0.subject}*\n{0.url}"
-                .format(self))
 
 
 def dirname(filepath):
