@@ -29,3 +29,7 @@ Edit the configuration in `elog-slack.py`. The `DESTINATIONS` dictionary is a si
 Here is an example how to run `elog-slack.py` using `nohup` via SSH:
 
     nohup ./elog-slack.py &
+
+## Example output in Slack
+
+![Screenshot of an elog-slack notification](http://tamasgal.com/km3net/elog-slack.png)
